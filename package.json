@@ -1,15 +1,47 @@
 {
-  "name": "go-smart-test-varname",
+  "name": "smart-return-names",
   "displayName": "Smart Return Names",
   "description": "为函数返回值生成更合适的变量名，支持多种主流语言，并支持 AI 命名与本地规则回退。",
   "version": "0.0.1",
-  "publisher": "huangzhenyu-local",
+  "publisher": "loveyu",
   "engines": {
     "vscode": "^1.113.0"
   },
   "icon": "assets/icon.png",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/loveyu233/go-smart-test-varname.git"
+  },
+  "homepage": "https://github.com/loveyu233/go-smart-test-varname#readme",
+  "bugs": {
+    "url": "https://github.com/loveyu233/go-smart-test-varname/issues"
+  },
+  "keywords": [
+    "ai",
+    "variables",
+    "return values",
+    "naming",
+    "go",
+    "typescript",
+    "python",
+    "rust",
+    "productivity",
+    "developer tools"
+  ],
+  "galleryBanner": {
+    "color": "#10213E",
+    "theme": "dark"
+  },
+  "markdown": "github",
+  "pricing": "Free",
+  "preview": true,
+  "extensionKind": [
+    "workspace"
+  ],
   "categories": [
     "Programming Languages",
+    "Snippets",
     "Other"
   ],
   "activationEvents": [
