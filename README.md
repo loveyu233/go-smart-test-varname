@@ -20,9 +20,19 @@ func TestAA(t *testing.T) {
 
 - 根据函数返回值个数自动生成变量名
 - `error` 返回值固定命名为 `err`
+- 常见函数名前缀优先本地命名，减少等待时间
 - 优先使用 AI 生成非 `error` 返回值名称
 - AI 不可用时自动回退到本地规则命名
 - 默认只在 `*_test.go` 中启用
+
+本地规则示例：
+
+- `GetUser() (*User, error)` -> `user, err`
+- `ListUsers() ([]User, error)` -> `users, err`
+- `ParseConfig() (*Config, error)` -> `config, err`
+- `CountUsers() (int, error)` -> `count, err`
+- `HasPermission() (bool, error)` -> `hasPermission, err`
+- `ExistsUser() (bool, error)` -> `userExists, err`
 
 ## 配置
 

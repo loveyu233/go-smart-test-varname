@@ -403,17 +403,25 @@ function parseReturnField(fieldText) {
 
 async function suggestVariableNames(input) {
   const returns = flattenReturns(input.signatureInfo.returns);
-  const nonErrorReturns = returns.filter((item) => !item.isError);
+  const localPlans = returns.map((item, index) =>
+    buildLocalNamePlan({
+      functionName: input.signatureInfo.functionName,
+      item,
+      index,
+      total: returns.length
+    })
+  );
+  const aiTargets = localPlans.filter(shouldAskAiForLocalName);
   const config = vscode.workspace.getConfiguration("goSmartTestVarname");
 
   let aiNames = [];
-  if (config.get("ai.enabled", false) && nonErrorReturns.length > 0) {
+  if (config.get("ai.enabled", false) && aiTargets.length > 0) {
     try {
       aiNames = await requestAiVariableNames({
         functionName: input.signatureInfo.functionName,
         signatureText: input.signatureInfo.signatureText,
         callExpression: input.callExpression,
-        returns: nonErrorReturns
+        returns: aiTargets.map((plan) => plan.item)
       });
     } catch (error) {
       console.warn("go-smart-test-varname AI fallback:", error);
@@ -422,17 +430,11 @@ async function suggestVariableNames(input) {
 
   const used = new Set();
   let aiIndex = 0;
-  return returns.map((item, index) => {
-    let candidate;
-    if (item.isError) {
-      candidate = "err";
-    } else if (item.name) {
-      candidate = toCamelName(item.name);
-    } else if (aiNames[aiIndex]) {
+  return localPlans.map((plan) => {
+    let candidate = plan.name;
+    if (shouldAskAiForLocalName(plan) && aiNames[aiIndex]) {
       candidate = toCamelName(aiNames[aiIndex]);
       aiIndex += 1;
-    } else {
-      candidate = heuristicName(input.signatureInfo.functionName, item.type, index, returns.length);
     }
     return makeUniqueName(candidate, used);
   });
@@ -679,15 +681,66 @@ function buildChatCompletionsUrl(baseUrl) {
   return `${raw}/chat/completions`;
 }
 
+function buildLocalNamePlan({ functionName, item, index, total }) {
+  if (item.isError) {
+    return { item, name: "err", confidence: "high", source: "error" };
+  }
+
+  if (item.name) {
+    return {
+      item,
+      name: toCamelName(item.name),
+      confidence: "high",
+      source: "named-return"
+    };
+  }
+
+  const alias = aliasFromType(item.type);
+  if (alias) {
+    return { item, name: alias, confidence: "high", source: "type-alias" };
+  }
+
+  const functionDerived = deriveNameByFunction(functionName, item.type);
+  if (functionDerived.name) {
+    return {
+      item,
+      name: functionDerived.name,
+      confidence: functionDerived.confidence,
+      source: "function"
+    };
+  }
+
+  const typeDerived = deriveNameByType(item.type, index, total);
+  if (typeDerived.name) {
+    return {
+      item,
+      name: typeDerived.name,
+      confidence: typeDerived.confidence,
+      source: "type"
+    };
+  }
+
+  return {
+    item,
+    name: heuristicName(functionName, item.type, index, total),
+    confidence: "low",
+    source: "fallback"
+  };
+}
+
+function shouldAskAiForLocalName(plan) {
+  return !plan.item.isError && plan.confidence === "low";
+}
+
 function heuristicName(functionName, type, index, total) {
   const simplifiedType = normalizeType(type);
   if (total === 1 || index === 0) {
-    const fromFunc = deriveNameFromFunction(functionName);
-    if (fromFunc) {
+    const fromFunc = deriveNameByFunction(functionName, type);
+    if (fromFunc.name) {
       if (simplifiedType === "bool") {
-        return `is${capitalize(fromFunc)}`;
+        return `is${capitalize(fromFunc.name)}`;
       }
-      return fromFunc;
+      return fromFunc.name;
     }
   }
 
@@ -721,31 +774,307 @@ function heuristicName(functionName, type, index, total) {
   }
 }
 
-function deriveNameFromFunction(functionName) {
-  const prefixes = [
-    "Get",
-    "Load",
-    "Fetch",
-    "Find",
-    "Create",
-    "Build",
-    "Parse",
-    "Read",
-    "New",
-    "Make"
+function deriveNameByFunction(functionName, type) {
+  const rule = matchFunctionRule(functionName);
+  if (!rule || !rule.subjectWords.length) {
+    return { name: "", confidence: "low" };
+  }
+
+  const normalizedType = normalizeType(type);
+  if (rule.mode === "count" && isCountLikeType(normalizedType)) {
+    return {
+      name: rule.fixedName || "count",
+      confidence: rule.confidence
+    };
+  }
+
+  if (rule.mode === "bool" && normalizedType === "bool") {
+    return {
+      name: buildBooleanName(rule),
+      confidence: rule.confidence
+    };
+  }
+
+  let name = wordsToCamel(rule.subjectWords);
+  const isCollection = isCollectionType(normalizedType);
+
+  if (rule.mode === "plural" || isCollection) {
+    name = pluralizeCamel(name);
+  } else if (rule.mode === "single") {
+    name = singularizeCamel(name);
+  }
+
+  if (!name) {
+    return { name: "", confidence: "low" };
+  }
+
+  return {
+    name,
+    confidence: rule.confidence
+  };
+}
+
+function deriveNameByType(type, index, total) {
+  const normalizedType = normalizeType(type);
+  const exactAlias = aliasFromType(normalizedType);
+  if (exactAlias) {
+    return { name: exactAlias, confidence: "high" };
+  }
+
+  if (normalizedType.startsWith("[]")) {
+    const elementName = extractTypeBaseName(normalizedType.slice(2));
+    if (elementName) {
+      return { name: pluralizeCamel(elementName), confidence: "medium" };
+    }
+    return { name: total === 1 ? "items" : `items${index + 1}`, confidence: "low" };
+  }
+
+  if (normalizedType.startsWith("map[")) {
+    const mapValueType = extractMapValueType(normalizedType);
+    const base = extractTypeBaseName(mapValueType);
+    if (base) {
+      return { name: `${singularizeCamel(base)}Map`, confidence: "medium" };
+    }
+    return { name: total === 1 ? "m" : `m${index + 1}`, confidence: "low" };
+  }
+
+  const base = extractTypeBaseName(normalizedType);
+  if (base) {
+    return { name: singularizeCamel(base), confidence: "medium" };
+  }
+
+  return { name: "", confidence: "low" };
+}
+
+function matchFunctionRule(functionName) {
+  const rules = [
+    { prefix: "GetAll", mode: "plural", confidence: "high" },
+    { prefix: "LoadAll", mode: "plural", confidence: "high" },
+    { prefix: "FetchAll", mode: "plural", confidence: "high" },
+    { prefix: "Count", mode: "count", confidence: "high", fixedName: "count" },
+    { prefix: "Total", mode: "count", confidence: "high", fixedName: "total" },
+    { prefix: "Num", mode: "count", confidence: "medium", fixedName: "num" },
+    { prefix: "List", mode: "plural", confidence: "high" },
+    { prefix: "Query", mode: "plural", confidence: "medium" },
+    { prefix: "Search", mode: "plural", confidence: "medium" },
+    { prefix: "Get", mode: "single", confidence: "high" },
+    { prefix: "Load", mode: "single", confidence: "high" },
+    { prefix: "Fetch", mode: "single", confidence: "high" },
+    { prefix: "Find", mode: "single", confidence: "high" },
+    { prefix: "Create", mode: "single", confidence: "high" },
+    { prefix: "Build", mode: "single", confidence: "high" },
+    { prefix: "Parse", mode: "single", confidence: "high" },
+    { prefix: "Read", mode: "single", confidence: "high" },
+    { prefix: "New", mode: "single", confidence: "high" },
+    { prefix: "Make", mode: "single", confidence: "medium" },
+    { prefix: "Exists", mode: "bool", confidence: "high", boolStyle: "suffix-exists" },
+    { prefix: "Exist", mode: "bool", confidence: "medium", boolStyle: "suffix-exists" },
+    { prefix: "Has", mode: "bool", confidence: "high", boolStyle: "prefix" },
+    { prefix: "Can", mode: "bool", confidence: "high", boolStyle: "prefix" },
+    { prefix: "Should", mode: "bool", confidence: "medium", boolStyle: "prefix" },
+    { prefix: "Is", mode: "bool", confidence: "high", boolStyle: "prefix" }
   ];
-  let base = functionName;
-  for (const prefix of prefixes) {
-    if (base.startsWith(prefix) && base.length > prefix.length) {
-      base = base.slice(prefix.length);
-      break;
+
+  for (const rule of rules) {
+    if (functionName.startsWith(rule.prefix) && functionName.length > rule.prefix.length) {
+      const rawSubject = functionName.slice(rule.prefix.length);
+      const subjectWords = trimQualifierWords(splitIdentifierWords(rawSubject));
+      if (subjectWords.length > 0) {
+        return {
+          mode: rule.mode,
+          confidence: rule.confidence,
+          subjectWords,
+          prefix: rule.prefix,
+          boolStyle: rule.boolStyle || "",
+          fixedName: rule.fixedName || ""
+        };
+      }
     }
   }
-  return toCamelName(base);
+
+  return null;
+}
+
+function aliasFromType(type) {
+  const normalizedType = normalizeType(type);
+  const aliases = {
+    "context.Context": "ctx",
+    "*http.Request": "req",
+    "http.Request": "req",
+    "*http.Response": "resp",
+    "http.Response": "resp",
+    "*http.Client": "client",
+    "*sql.DB": "db",
+    "*sql.Tx": "tx",
+    "*gorm.DB": "db",
+    "io.Reader": "reader",
+    "io.Writer": "writer",
+    "[]byte": "data",
+    "[]rune": "runes",
+    "*bytes.Buffer": "buf",
+    "bytes.Buffer": "buf"
+  };
+  return aliases[normalizedType] || "";
 }
 
 function normalizeType(type) {
   return String(type || "").replace(/\s+/g, " ").trim();
+}
+
+function isCountLikeType(type) {
+  return /^(int|int8|int16|int32|int64|uint|uint8|uint16|uint32|uint64|uintptr)$/i.test(
+    normalizeType(type)
+  );
+}
+
+function splitIdentifierWords(value) {
+  return String(value || "")
+    .replace(/[^A-Za-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .flatMap((part) => part.match(/[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+/g) || []);
+}
+
+function trimQualifierWords(words) {
+  const qualifiers = new Set(["By", "With", "From", "For", "In", "On", "At", "Of", "Using"]);
+  const result = [];
+  for (const word of words) {
+    if (qualifiers.has(word)) {
+      break;
+    }
+    result.push(word);
+  }
+  return result;
+}
+
+function wordsToCamel(words) {
+  if (!Array.isArray(words) || words.length === 0) {
+    return "";
+  }
+  const normalized = words.map((word) => sanitizeWord(word)).filter(Boolean);
+  if (normalized.length === 0) {
+    return "";
+  }
+  const [first, ...rest] = normalized;
+  return first.charAt(0).toLowerCase() + first.slice(1) + rest.map(capitalize).join("");
+}
+
+function sanitizeWord(word) {
+  return String(word || "").replace(/[^A-Za-z0-9]/g, "");
+}
+
+function isCollectionType(type) {
+  const normalizedType = normalizeType(type);
+  return normalizedType.startsWith("[]") || normalizedType.startsWith("map[");
+}
+
+function extractMapValueType(type) {
+  const normalizedType = normalizeType(type);
+  if (!normalizedType.startsWith("map[")) {
+    return "";
+  }
+
+  let depth = 0;
+  for (let i = 0; i < normalizedType.length; i += 1) {
+    const ch = normalizedType[i];
+    if (ch === "[") {
+      depth += 1;
+    } else if (ch === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return normalizedType.slice(i + 1).trim();
+      }
+    }
+  }
+  return "";
+}
+
+function extractTypeBaseName(type) {
+  let normalizedType = normalizeType(type);
+  while (normalizedType.startsWith("*")) {
+    normalizedType = normalizedType.slice(1).trim();
+  }
+
+  if (normalizedType.startsWith("[]")) {
+    return extractTypeBaseName(normalizedType.slice(2));
+  }
+
+  if (normalizedType.startsWith("map[")) {
+    return extractTypeBaseName(extractMapValueType(normalizedType));
+  }
+
+  normalizedType = normalizedType.replace(/\[[^\]]*\]/g, "");
+  const parts = normalizedType.split(".");
+  return toCamelName(parts[parts.length - 1] || "");
+}
+
+function pluralizeCamel(name) {
+  const words = splitIdentifierWords(name);
+  if (words.length === 0) {
+    return name;
+  }
+  words[words.length - 1] = pluralizeWord(words[words.length - 1]);
+  return wordsToCamel(words);
+}
+
+function singularizeCamel(name) {
+  const words = splitIdentifierWords(name);
+  if (words.length === 0) {
+    return name;
+  }
+  words[words.length - 1] = singularizeWord(words[words.length - 1]);
+  return wordsToCamel(words);
+}
+
+function pluralizeWord(word) {
+  const raw = String(word || "");
+  const lower = raw.toLowerCase();
+  if (!raw) {
+    return "";
+  }
+  if (/(s|x|z|ch|sh)$/.test(lower)) {
+    return `${raw}es`;
+  }
+  if (/[^aeiou]y$/.test(lower)) {
+    return `${raw.slice(0, -1)}ies`;
+  }
+  if (lower.endsWith("s")) {
+    return raw;
+  }
+  return `${raw}s`;
+}
+
+function singularizeWord(word) {
+  const raw = String(word || "");
+  const lower = raw.toLowerCase();
+  if (!raw) {
+    return "";
+  }
+  if (/[^aeiou]ies$/.test(lower)) {
+    return `${raw.slice(0, -3)}y`;
+  }
+  if (/(ches|shes|ses|xes|zes)$/.test(lower)) {
+    return raw.slice(0, -2);
+  }
+  if (lower.endsWith("s") && !lower.endsWith("ss")) {
+    return raw.slice(0, -1);
+  }
+  return raw;
+}
+
+function buildBooleanName(rule) {
+  const subjectWords = trimQualifierWords(rule.subjectWords || []);
+  if (subjectWords.length === 0) {
+    return "ok";
+  }
+
+  if (rule.boolStyle === "suffix-exists") {
+    const subject = singularizeCamel(wordsToCamel(subjectWords));
+    return subject ? `${subject}Exists` : "exists";
+  }
+
+  const prefixWord = String(rule.prefix || "").toLowerCase();
+  return wordsToCamel([prefixWord, ...subjectWords]) || "ok";
 }
 
 function toCamelName(value) {
@@ -793,11 +1122,144 @@ function sanitizeIdentifier(name) {
   if (!cleaned) {
     return "";
   }
-  if (/^(break|default|func|interface|select|case|defer|go|map|struct|chan|else|goto|package|switch|const|fallthrough|if|range|type|continue|for|import|return|var)$/.test(cleaned)) {
+
+  const lowered = cleaned.toLowerCase();
+  const safeAlias = reservedIdentifierAlias(lowered);
+  if (safeAlias) {
+    return safeAlias;
+  }
+
+  if (isGoReservedIdentifier(lowered)) {
     return `${cleaned}Value`;
   }
   return cleaned;
 }
+
+function reservedIdentifierAlias(name) {
+  const aliases = {
+    string: "str",
+    bool: "ok",
+    error: "err",
+    byte: "b",
+    rune: "r",
+    int: "n",
+    int8: "n8",
+    int16: "n16",
+    int32: "n32",
+    int64: "n64",
+    uint: "u",
+    uint8: "u8",
+    uint16: "u16",
+    uint32: "u32",
+    uint64: "u64",
+    uintptr: "ptr",
+    float32: "f32",
+    float64: "f64",
+    complex64: "c64",
+    complex128: "c128",
+    any: "value",
+    comparable: "value",
+    true: "ok",
+    false: "ok",
+    iota: "idx",
+    nil: "value",
+    len: "length",
+    cap: "capacity",
+    make: "value",
+    new: "value",
+    append: "items",
+    copy: "copied",
+    close: "closed",
+    delete: "deleted",
+    clear: "cleared",
+    complex: "complexValue",
+    real: "realPart",
+    imag: "imagPart",
+    panic: "panicValue",
+    recover: "recovered",
+    min: "minValue",
+    max: "maxValue",
+    print: "printed",
+    println: "printed"
+  };
+  return aliases[name] || "";
+}
+
+function isGoReservedIdentifier(name) {
+  return GO_RESERVED_IDENTIFIERS.has(String(name || "").toLowerCase());
+}
+
+const GO_RESERVED_IDENTIFIERS = new Set([
+  "break",
+  "default",
+  "func",
+  "interface",
+  "select",
+  "case",
+  "defer",
+  "go",
+  "map",
+  "struct",
+  "chan",
+  "else",
+  "goto",
+  "package",
+  "switch",
+  "const",
+  "fallthrough",
+  "if",
+  "range",
+  "type",
+  "continue",
+  "for",
+  "import",
+  "return",
+  "var",
+  "bool",
+  "byte",
+  "complex64",
+  "complex128",
+  "error",
+  "float32",
+  "float64",
+  "int",
+  "int8",
+  "int16",
+  "int32",
+  "int64",
+  "rune",
+  "string",
+  "uint",
+  "uint8",
+  "uint16",
+  "uint32",
+  "uint64",
+  "uintptr",
+  "true",
+  "false",
+  "iota",
+  "nil",
+  "append",
+  "cap",
+  "close",
+  "complex",
+  "copy",
+  "delete",
+  "imag",
+  "len",
+  "make",
+  "new",
+  "panic",
+  "print",
+  "println",
+  "real",
+  "recover",
+  "clear",
+  "max",
+  "min",
+  "any",
+  "comparable"
+]);
 
 function isErrorType(type) {
   return normalizeType(type) === "error";
