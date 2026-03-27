@@ -1,0 +1,80 @@
+{
+  "name": "go-smart-test-varname",
+  "displayName": "Go Smart Test Varname",
+  "description": "在 Go 测试代码里为函数返回值生成更合适的变量名，支持 AI 命名与规则回退。",
+  "version": "0.0.1",
+  "publisher": "huangzhenyu-local",
+  "engines": {
+    "vscode": "^1.113.0"
+  },
+  "icon": "assets/icon.png",
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:go"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "goSmartTestVarname.applyAiCompletion",
+        "title": "Go Smart Test Varname: 应用 AI 返回值命名"
+      }
+    ],
+    "configuration": {
+      "title": "Go Smart Test Varname",
+      "properties": {
+        "goSmartTestVarname.ai.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否启用 AI 变量命名。关闭时使用本地规则命名。"
+        },
+        "goSmartTestVarname.openai.baseURL": {
+          "type": "string",
+          "default": "https://api.openai.com/v1/chat/completions",
+          "description": "OpenAI 兼容接口地址。"
+        },
+        "goSmartTestVarname.openai.key": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "OpenAI 接口密钥。建议通过 VS Code Secret Storage 或环境变量注入，当前为简化配置直接放在设置项中。"
+        },
+        "goSmartTestVarname.openai.modelID": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "用于生成变量名的模型 ID。"
+        },
+        "goSmartTestVarname.openai.systemPrompt": {
+          "type": "string",
+          "default": "你是一个严谨的 Go 命名助手。",
+          "description": "发送给模型的系统提示词。"
+        },
+        "goSmartTestVarname.openai.temperature": {
+          "type": "number",
+          "default": 0.1,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "OpenAI 请求的 temperature。"
+        },
+        "goSmartTestVarname.openai.stream": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否启用 OpenAI 流式返回。服务端不支持时会自动回退为普通 JSON 解析。"
+        },
+        "goSmartTestVarname.ai.timeoutMs": {
+          "type": "number",
+          "default": 6000,
+          "minimum": 1000,
+          "description": "AI 请求超时时间，单位毫秒。"
+        },
+        "goSmartTestVarname.onlyInTestFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否只在 *_test.go 文件中提供 ai 补全。"
+        }
+      }
+    }
+  }
+}
