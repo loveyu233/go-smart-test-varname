@@ -991,6 +991,14 @@ function heuristicName(functionName, type, index, total) {
       }
       return fromFunc.name;
     }
+
+    const plainFunctionName = derivePlainFunctionName(functionName);
+    if (plainFunctionName) {
+      if (simplifiedType === "bool") {
+        return `is${capitalize(plainFunctionName)}`;
+      }
+      return plainFunctionName;
+    }
   }
 
   switch (simplifiedType) {
@@ -1065,6 +1073,10 @@ function deriveNameByFunction(functionName, type) {
 
 function deriveNameByType(type, index, total) {
   const normalizedType = normalizeType(type);
+  if (isWeakGenericType(normalizedType)) {
+    return { name: "", confidence: "low" };
+  }
+
   const exactAlias = aliasFromType(normalizedType);
   if (exactAlias) {
     return { name: exactAlias, confidence: "high" };
@@ -1093,6 +1105,19 @@ function deriveNameByType(type, index, total) {
   }
 
   return { name: "", confidence: "low" };
+}
+
+function derivePlainFunctionName(functionName) {
+  const cleaned = toCamelName(functionName);
+  if (!cleaned) {
+    return "";
+  }
+
+  const lowered = cleaned.toLowerCase();
+  if (isWeakGenericType(lowered) || GENERIC_FUNCTION_NAME_WORDS.has(lowered)) {
+    return "";
+  }
+  return cleaned;
 }
 
 function matchFunctionRule(functionName) {
@@ -1168,6 +1193,10 @@ function aliasFromType(type) {
 
 function normalizeType(type) {
   return String(type || "").replace(/\s+/g, " ").trim();
+}
+
+function isWeakGenericType(type) {
+  return WEAK_GENERIC_TYPES.has(normalizeType(type).toLowerCase());
 }
 
 function isCountLikeType(type) {
@@ -1470,6 +1499,42 @@ const SUPPORTED_LANGUAGE_IDS = new Set([
   "dart",
   "c",
   "cpp"
+]);
+
+const WEAK_GENERIC_TYPES = new Set([
+  "unknown",
+  "any",
+  "void",
+  "never",
+  "undefined",
+  "null",
+  "object",
+  "{}",
+  "mixed"
+]);
+
+const GENERIC_FUNCTION_NAME_WORDS = new Set([
+  "get",
+  "set",
+  "run",
+  "exec",
+  "execute",
+  "call",
+  "invoke",
+  "handle",
+  "process",
+  "do",
+  "make",
+  "create",
+  "build",
+  "parse",
+  "read",
+  "write",
+  "load",
+  "fetch",
+  "find",
+  "query",
+  "search"
 ]);
 
 const GO_RESERVED_IDENTIFIERS = new Set([
