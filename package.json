@@ -2,7 +2,7 @@
   "name": "smart-return-names",
   "displayName": "Smart Return Names",
   "description": "为函数返回值生成更合适的变量名，支持多种主流语言，并支持 AI 命名与本地规则回退。",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "loveyu",
   "engines": {
     "vscode": "^1.113.0"
