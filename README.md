@@ -64,6 +64,20 @@ getUser().
 const user = getUser()
 ```
 
+### React / TSX
+
+改写前：
+
+```tsx
+loadProfile().
+```
+
+改写后：
+
+```tsx
+const profile = loadProfile()
+```
+
 ### Python
 
 改写前：
@@ -100,15 +114,26 @@ config = load_config()
 
 ## 当前支持的语言
 
-目前已经接入的主要语言包括：
+目前已经接入的主要语言可以按场景理解：
 
-- Go
+### Web / 前端
+
 - JavaScript
 - TypeScript
+- React JSX
+- React TSX
+- Vue
+
+### 后端 / 通用开发
+
+- Go
 - Python
 - Rust
 - Java
 - C#
+
+### 其他语言
+
 - PHP
 - Ruby
 - Lua
