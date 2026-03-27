@@ -72,6 +72,7 @@ async function applyAiCompletion(serializedCallSite) {
         progress.report({ message: "正在解析函数签名..." });
         const uri = vscode.Uri.parse(serializedCallSite.uri);
         const document = await vscode.workspace.openTextDocument(uri);
+        const normalizedLanguageId = normalizeLanguageId(document.languageId);
         const callSite = deserializeCallSite(serializedCallSite);
         const signatureInfo = await resolveFunctionSignature(document, callSite);
         if (!signatureInfo || !signatureInfo.returns.length) {
@@ -83,7 +84,7 @@ async function applyAiCompletion(serializedCallSite) {
         const names = await suggestVariableNames({
           signatureInfo,
           callExpression: callSite.callExpression,
-          languageId: document.languageId
+          languageId: normalizedLanguageId
         });
         if (!names || names.length !== signatureInfo.returns.length) {
           vscode.window.showWarningMessage("生成变量名失败，请检查函数签名或 AI 配置。");
@@ -92,7 +93,7 @@ async function applyAiCompletion(serializedCallSite) {
 
         progress.report({ message: "正在写入代码..." });
         const assignmentText = buildAssignmentText(
-          document.languageId,
+          normalizedLanguageId,
           names,
           callSite.callExpression
         );
@@ -118,11 +119,12 @@ async function applyAiCompletion(serializedCallSite) {
 }
 
 function shouldProvideForDocument(document) {
-  if (!SUPPORTED_LANGUAGE_IDS.has(document.languageId)) {
+  const normalizedLanguageId = normalizeLanguageId(document.languageId);
+  if (!SUPPORTED_LANGUAGE_IDS.has(normalizedLanguageId)) {
     return false;
   }
   const config = vscode.workspace.getConfiguration("goSmartTestVarname");
-  if (document.languageId !== "go") {
+  if (normalizedLanguageId !== "go") {
     return true;
   }
   if (!config.get("onlyInTestFiles", true)) {
@@ -276,6 +278,7 @@ async function resolveFunctionSignature(document, callSite) {
   }
 
   const defDoc = await vscode.workspace.openTextDocument(uri);
+  const normalizedLanguageId = normalizeLanguageId(defDoc.languageId || document.languageId);
   const signatureText = readFunctionSignature(defDoc, range.start.line);
   if (!signatureText) {
     return null;
@@ -283,7 +286,7 @@ async function resolveFunctionSignature(document, callSite) {
 
   const parsed = parseFunctionSignature(
     signatureText,
-    defDoc.languageId || document.languageId,
+    normalizedLanguageId,
     callSite.functionName
   );
   if (!parsed) {
@@ -298,10 +301,11 @@ async function resolveFunctionSignature(document, callSite) {
 }
 
 function readFunctionSignature(document, startLine) {
-  if (document.languageId === "go") {
+  const normalizedLanguageId = normalizeLanguageId(document.languageId);
+  if (normalizedLanguageId === "go") {
     return readGoFunctionSignature(document, startLine);
   }
-  return readGenericFunctionSignature(document, startLine);
+  return readGenericFunctionSignature(document, startLine, normalizedLanguageId);
 }
 
 function readGoFunctionSignature(document, startLine) {
@@ -334,7 +338,7 @@ function readGoFunctionSignature(document, startLine) {
   return combined.trim();
 }
 
-function readGenericFunctionSignature(document, startLine) {
+function readGenericFunctionSignature(document, startLine, languageId) {
   let combined = "";
 
   for (let i = startLine; i < Math.min(document.lineCount, startLine + 20); i += 1) {
@@ -342,7 +346,7 @@ function readGenericFunctionSignature(document, startLine) {
     combined += `${line}\n`;
     const trimmed = line.trim();
 
-    if (document.languageId === "python" && trimmed.endsWith(":")) {
+    if (languageId === "python" && trimmed.endsWith(":")) {
       break;
     }
     if (trimmed.includes("=>")) {
@@ -357,10 +361,11 @@ function readGenericFunctionSignature(document, startLine) {
 }
 
 function parseFunctionSignature(signatureText, languageId = "go", fallbackName = "") {
-  if (languageId === "go") {
+  const normalizedLanguageId = normalizeLanguageId(languageId);
+  if (normalizedLanguageId === "go") {
     return parseGoFunctionSignature(signatureText);
   }
-  return parseGenericFunctionSignature(signatureText, languageId, fallbackName);
+  return parseGenericFunctionSignature(signatureText, normalizedLanguageId, fallbackName);
 }
 
 function parseGoFunctionSignature(signatureText) {
@@ -880,7 +885,9 @@ function buildAssignmentText(languageId, names, callExpression) {
     return "";
   }
 
-  switch (languageId) {
+  const normalizedLanguageId = normalizeLanguageId(languageId);
+
+  switch (normalizedLanguageId) {
     case "go":
       return `${names.join(", ")} := ${callExpression}`;
     case "javascript":
@@ -1433,6 +1440,16 @@ function isGoReservedIdentifier(name) {
 
 function escapeRegExp(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeLanguageId(languageId) {
+  const value = String(languageId || "").toLowerCase();
+  switch (value) {
+    case "vue":
+      return "typescript";
+    default:
+      return value;
+  }
 }
 
 const SUPPORTED_LANGUAGE_IDS = new Set([
