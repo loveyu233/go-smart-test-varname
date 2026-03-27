@@ -1,6 +1,6 @@
-# Go Smart Test Varname
+# Smart Return Names
 
-在 Go 代码里输入 `Demo().` 时，提供一个 `ai` 补全项。选中后会把调用表达式替换为变量声明，例如：
+在代码里输入 `Demo().` 时，提供一个 `ai` 补全项。选中后会把调用表达式替换为变量声明，例如：
 
 ```go
 func TestAA(t *testing.T) {
@@ -23,7 +23,14 @@ func TestAA(t *testing.T) {
 - 常见函数名前缀优先本地命名，减少等待时间
 - 优先使用 AI 生成非 `error` 返回值名称
 - AI 不可用时自动回退到本地规则命名
-- 默认只在 `*_test.go` 中启用
+- Go 默认只在 `*_test.go` 中启用
+- 支持多语言赋值模板和基础签名解析
+
+说明：
+
+- 对外名称已改为语言无关版本
+- 为兼容现有设置，内部配置键仍沿用 `goSmartTestVarname.*`
+- `onlyInTestFiles` 仍然保留，且仅对 Go 生效
 
 本地规则示例：
 
@@ -33,6 +40,16 @@ func TestAA(t *testing.T) {
 - `CountUsers() (int, error)` -> `count, err`
 - `HasPermission() (bool, error)` -> `hasPermission, err`
 - `ExistsUser() (bool, error)` -> `userExists, err`
+
+当前已适配的主要语言：
+
+- Go
+- JavaScript / TypeScript
+- Python
+- Rust
+- Java / C#
+- PHP / Ruby / Lua
+- Kotlin / Swift / Dart
 
 ## 配置
 

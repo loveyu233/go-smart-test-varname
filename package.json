@@ -1,7 +1,7 @@
 {
   "name": "go-smart-test-varname",
-  "displayName": "Go Smart Test Varname",
-  "description": "在 Go 测试代码里为函数返回值生成更合适的变量名，支持 AI 命名与规则回退。",
+  "displayName": "Smart Return Names",
+  "description": "为函数返回值生成更合适的变量名，支持多种主流语言，并支持 AI 命名与本地规则回退。",
   "version": "0.0.1",
   "publisher": "huangzhenyu-local",
   "engines": {
@@ -13,18 +13,18 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:go"
+    "onStartupFinished"
   ],
   "main": "./src/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "goSmartTestVarname.applyAiCompletion",
-        "title": "Go Smart Test Varname: 应用 AI 返回值命名"
+        "title": "Smart Return Names: 应用 AI 返回值命名"
       }
     ],
     "configuration": {
-      "title": "Go Smart Test Varname",
+      "title": "Smart Return Names",
       "properties": {
         "goSmartTestVarname.ai.enabled": {
           "type": "boolean",
@@ -48,7 +48,7 @@
         },
         "goSmartTestVarname.openai.systemPrompt": {
           "type": "string",
-          "default": "你是一个严谨的 Go 命名助手。",
+          "default": "你是一个严谨的编程变量命名助手。",
           "description": "发送给模型的系统提示词。"
         },
         "goSmartTestVarname.openai.temperature": {
@@ -72,7 +72,7 @@
         "goSmartTestVarname.onlyInTestFiles": {
           "type": "boolean",
           "default": true,
-          "description": "是否只在 *_test.go 文件中提供 ai 补全。"
+          "description": "是否仅在 Go 的 *_test.go 文件中提供 ai 补全。其他语言不受此限制。"
         }
       }
     }

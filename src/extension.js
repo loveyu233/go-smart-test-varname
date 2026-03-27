@@ -4,7 +4,7 @@ function activate(context) {
   const provider = new GoSmartReturnNameCompletionProvider(context);
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(
-      { language: "go", scheme: "file" },
+      { scheme: "file" },
       provider,
       "."
     )
@@ -64,7 +64,7 @@ async function applyAiCompletion(serializedCallSite) {
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: "Go Smart Test Varname 正在生成变量名",
+      title: "Smart Return Names 正在生成变量名",
       cancellable: false
     },
     async (progress) => {
@@ -82,7 +82,8 @@ async function applyAiCompletion(serializedCallSite) {
         progress.report({ message: "正在生成变量名..." });
         const names = await suggestVariableNames({
           signatureInfo,
-          callExpression: callSite.callExpression
+          callExpression: callSite.callExpression,
+          languageId: document.languageId
         });
         if (!names || names.length !== signatureInfo.returns.length) {
           vscode.window.showWarningMessage("生成变量名失败，请检查函数签名或 AI 配置。");
@@ -90,17 +91,26 @@ async function applyAiCompletion(serializedCallSite) {
         }
 
         progress.report({ message: "正在写入代码..." });
+        const assignmentText = buildAssignmentText(
+          document.languageId,
+          names,
+          callSite.callExpression
+        );
+        if (!assignmentText) {
+          vscode.window.showWarningMessage(`当前语言暂未支持自动写入：${document.languageId}`);
+          return;
+        }
         const edit = new vscode.WorkspaceEdit();
         edit.replace(
           uri,
           callSite.acceptedRange || callSite.replaceRange,
-          `${names.join(", ")} := ${callSite.callExpression}`
+          assignmentText
         );
         await vscode.workspace.applyEdit(edit);
       } catch (error) {
         console.error("go-smart-test-varname apply failed:", error);
         vscode.window.showErrorMessage(
-          `Go Smart Test Varname 执行失败：${error?.message || String(error)}`
+          `Smart Return Names 执行失败：${error?.message || String(error)}`
         );
       }
     }
@@ -108,7 +118,13 @@ async function applyAiCompletion(serializedCallSite) {
 }
 
 function shouldProvideForDocument(document) {
+  if (!SUPPORTED_LANGUAGE_IDS.has(document.languageId)) {
+    return false;
+  }
   const config = vscode.workspace.getConfiguration("goSmartTestVarname");
+  if (document.languageId !== "go") {
+    return true;
+  }
   if (!config.get("onlyInTestFiles", true)) {
     return true;
   }
@@ -265,7 +281,11 @@ async function resolveFunctionSignature(document, callSite) {
     return null;
   }
 
-  const parsed = parseFunctionSignature(signatureText);
+  const parsed = parseFunctionSignature(
+    signatureText,
+    defDoc.languageId || document.languageId,
+    callSite.functionName
+  );
   if (!parsed) {
     return null;
   }
@@ -278,6 +298,13 @@ async function resolveFunctionSignature(document, callSite) {
 }
 
 function readFunctionSignature(document, startLine) {
+  if (document.languageId === "go") {
+    return readGoFunctionSignature(document, startLine);
+  }
+  return readGenericFunctionSignature(document, startLine);
+}
+
+function readGoFunctionSignature(document, startLine) {
   let combined = "";
   let braceDepth = 0;
   let sawFunc = false;
@@ -307,7 +334,36 @@ function readFunctionSignature(document, startLine) {
   return combined.trim();
 }
 
-function parseFunctionSignature(signatureText) {
+function readGenericFunctionSignature(document, startLine) {
+  let combined = "";
+
+  for (let i = startLine; i < Math.min(document.lineCount, startLine + 20); i += 1) {
+    const line = document.lineAt(i).text;
+    combined += `${line}\n`;
+    const trimmed = line.trim();
+
+    if (document.languageId === "python" && trimmed.endsWith(":")) {
+      break;
+    }
+    if (trimmed.includes("=>")) {
+      break;
+    }
+    if (trimmed.endsWith("{") || trimmed.endsWith(";") || trimmed.includes("{")) {
+      break;
+    }
+  }
+
+  return combined.trim();
+}
+
+function parseFunctionSignature(signatureText, languageId = "go", fallbackName = "") {
+  if (languageId === "go") {
+    return parseGoFunctionSignature(signatureText);
+  }
+  return parseGenericFunctionSignature(signatureText, languageId, fallbackName);
+}
+
+function parseGoFunctionSignature(signatureText) {
   const funcIndex = signatureText.indexOf("func ");
   if (funcIndex < 0) {
     return null;
@@ -369,6 +425,142 @@ function parseFunctionSignature(signatureText) {
   };
 }
 
+function parseGenericFunctionSignature(signatureText, languageId, fallbackName) {
+  const compact = signatureText.replace(/\s+/g, " ").trim();
+  const name = extractFunctionNameFromSignature(compact, languageId, fallbackName);
+  if (!name) {
+    return null;
+  }
+
+  const returnSpec = extractReturnSpec(compact, languageId, name);
+  const returns = parseGenericReturnSpec(returnSpec, languageId);
+  return {
+    name,
+    returns
+  };
+}
+
+function extractFunctionNameFromSignature(signatureText, languageId, fallbackName) {
+  const namePattern = /([A-Za-z_]\w*)\s*\(/g;
+  let match;
+  let last = null;
+  while ((match = namePattern.exec(signatureText)) !== null) {
+    last = match[1];
+  }
+
+  if (languageId === "python") {
+    const pythonMatch = signatureText.match(/def\s+([A-Za-z_]\w*)\s*\(/);
+    if (pythonMatch) {
+      return pythonMatch[1];
+    }
+  }
+
+  if (languageId === "go") {
+    const goMatch = signatureText.match(/func(?:\s*\([^)]*\))?\s+([A-Za-z_]\w*)\s*\(/);
+    if (goMatch) {
+      return goMatch[1];
+    }
+  }
+
+  return last || fallbackName || "";
+}
+
+function extractReturnSpec(signatureText, languageId, functionName) {
+  const compact = signatureText.replace(/\s+/g, " ").trim();
+
+  if (languageId === "python") {
+    const pythonMatch = compact.match(/def\s+[A-Za-z_]\w*\s*\([^)]*\)\s*(?:->\s*([^:]+))?:/);
+    return pythonMatch?.[1]?.trim() || "";
+  }
+
+  if (languageId === "go") {
+    return "";
+  }
+
+  if (languageId === "rust" || languageId === "swift") {
+    const arrowMatch = compact.match(/->\s*([^={;]+)/);
+    return arrowMatch?.[1]?.trim() || "";
+  }
+
+  if (languageId === "typescript" || languageId === "typescriptreact") {
+    const functionMatch = compact.match(/function\s+[A-Za-z_]\w*\s*\([^)]*\)\s*:\s*([^={;]+)/);
+    if (functionMatch) {
+      return functionMatch[1].trim();
+    }
+    const arrowMatch = compact.match(/=\s*(?:async\s*)?\([^)]*\)\s*:\s*([^=]+)=>/);
+    if (arrowMatch) {
+      return arrowMatch[1].trim();
+    }
+    const methodMatch = compact.match(/[A-Za-z_]\w*\s*\([^)]*\)\s*:\s*([^={;]+)/);
+    return methodMatch?.[1]?.trim() || "";
+  }
+
+  if (languageId === "kotlin") {
+    const match = compact.match(/fun\s+[A-Za-z_]\w*\s*\([^)]*\)\s*:\s*([^={]+)/);
+    return match?.[1]?.trim() || "";
+  }
+
+  if (languageId === "javascript" || languageId === "javascriptreact" || languageId === "ruby" || languageId === "lua") {
+    return "";
+  }
+
+  const nameRegex = new RegExp(`\\b${escapeRegExp(functionName)}\\s*\\(`);
+  const nameMatch = compact.match(nameRegex);
+  if (!nameMatch || nameMatch.index == null) {
+    return "";
+  }
+
+  const prefix = compact.slice(0, nameMatch.index).trim();
+  const tokens = prefix.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) {
+    return "";
+  }
+  return tokens[tokens.length - 1];
+}
+
+function parseGenericReturnSpec(returnSpec, languageId) {
+  if (!returnSpec) {
+    return [{ name: "", type: "unknown", isError: false }];
+  }
+
+  const normalized = returnSpec.trim();
+  if (!normalized) {
+    return [{ name: "", type: "unknown", isError: false }];
+  }
+
+  if (languageId === "python") {
+    const tupleMatch = normalized.match(/^tuple\[(.*)\]$/i);
+    if (tupleMatch) {
+      return splitTopLevel(tupleMatch[1], ",").map((type) => ({
+        name: "",
+        type: type.trim(),
+        isError: false
+      }));
+    }
+  }
+
+  if (
+    (normalized.startsWith("(") && normalized.endsWith(")")) ||
+    (normalized.startsWith("[") && normalized.endsWith("]"))
+  ) {
+    const inner = normalized.slice(1, -1).trim();
+    const parts = splitTopLevel(inner, ",").map((part) => part.trim()).filter(Boolean);
+    if (parts.length > 1) {
+      return parts.map((type) => ({
+        name: "",
+        type,
+        isError: normalizeType(type) === "error"
+      }));
+    }
+  }
+
+  return [{
+    name: "",
+    type: normalized,
+    isError: normalizeType(normalized) === "error"
+  }];
+}
+
 function parseReturnFields(returnSpec) {
   const parts = splitTopLevel(returnSpec, ",");
   return parts
@@ -421,6 +613,7 @@ async function suggestVariableNames(input) {
         functionName: input.signatureInfo.functionName,
         signatureText: input.signatureInfo.signatureText,
         callExpression: input.callExpression,
+        languageId: input.languageId,
         returns: aiTargets.map((plan) => plan.item)
       });
     } catch (error) {
@@ -445,7 +638,7 @@ async function requestAiVariableNames(payload) {
   const baseUrl = config.get("openai.baseURL", "");
   const apiKey = config.get("openai.key", "");
   const model = config.get("openai.modelID", "gpt-4o-mini");
-  const systemPrompt = config.get("openai.systemPrompt", "你是一个严谨的 Go 命名助手。");
+  const systemPrompt = config.get("openai.systemPrompt", "你是一个严谨的编程变量命名助手。");
   const temperature = config.get("openai.temperature", 0.1);
   const stream = config.get("openai.stream", true);
   const timeoutMs = config.get("ai.timeoutMs", 6000);
@@ -456,15 +649,16 @@ async function requestAiVariableNames(payload) {
   }
 
   const prompt = [
-    "你是 Go 变量命名助手。",
-    "任务：根据函数签名和调用表达式，只为非 error 返回值生成最合适的 Go 局部变量名。",
+    "你是编程变量命名助手。",
+    "任务：根据函数签名、调用表达式和目标语言，只为非 error 返回值生成最合适的局部变量名。",
     "约束：",
     "1. 只返回 JSON 数组，不要 Markdown，不要解释。",
-    "2. 名称必须是小驼峰或简短 Go 风格名称。",
+    "2. 名称必须符合目标语言常见命名风格，并尽量简洁。",
     "3. 不要返回 err，error 由调用方固定命名为 err。",
     "4. 名称数量必须等于非 error 返回值数量。",
     `函数签名：${payload.signatureText}`,
     `调用表达式：${payload.callExpression}`,
+    `目标语言：${payload.languageId || "unknown"}`,
     `非 error 返回值：${JSON.stringify(payload.returns)}`
   ].join("\n");
 
@@ -679,6 +873,54 @@ function buildChatCompletionsUrl(baseUrl) {
   }
 
   return `${raw}/chat/completions`;
+}
+
+function buildAssignmentText(languageId, names, callExpression) {
+  if (!Array.isArray(names) || names.length === 0) {
+    return "";
+  }
+
+  switch (languageId) {
+    case "go":
+      return `${names.join(", ")} := ${callExpression}`;
+    case "javascript":
+    case "javascriptreact":
+    case "typescript":
+    case "typescriptreact":
+      return names.length === 1
+        ? `const ${names[0]} = ${callExpression}`
+        : `const [${names.join(", ")}] = ${callExpression}`;
+    case "python":
+    case "ruby":
+      return `${names.join(", ")} = ${callExpression}`;
+    case "lua":
+      return `local ${names.join(", ")} = ${callExpression}`;
+    case "rust":
+      return names.length === 1
+        ? `let ${names[0]} = ${callExpression};`
+        : `let (${names.join(", ")}) = ${callExpression};`;
+    case "php":
+      return names.length === 1
+        ? `$${names[0]} = ${callExpression};`
+        : `[${names.map((name) => `$${name}`).join(", ")}] = ${callExpression};`;
+    case "kotlin":
+      return names.length === 1
+        ? `val ${names[0]} = ${callExpression}`
+        : `val (${names.join(", ")}) = ${callExpression}`;
+    case "swift":
+      return names.length === 1
+        ? `let ${names[0]} = ${callExpression}`
+        : `let (${names.join(", ")}) = ${callExpression}`;
+    case "java":
+    case "csharp":
+    case "dart":
+      return `var ${names[0]} = ${callExpression};`;
+    case "cpp":
+    case "c":
+      return `auto ${names[0]} = ${callExpression};`;
+    default:
+      return `let ${names[0]} = ${callExpression};`;
+  }
 }
 
 function buildLocalNamePlan({ functionName, item, index, total }) {
@@ -1188,6 +1430,30 @@ function reservedIdentifierAlias(name) {
 function isGoReservedIdentifier(name) {
   return GO_RESERVED_IDENTIFIERS.has(String(name || "").toLowerCase());
 }
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const SUPPORTED_LANGUAGE_IDS = new Set([
+  "go",
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "python",
+  "rust",
+  "java",
+  "csharp",
+  "php",
+  "ruby",
+  "lua",
+  "kotlin",
+  "swift",
+  "dart",
+  "c",
+  "cpp"
+]);
 
 const GO_RESERVED_IDENTIFIERS = new Set([
   "break",
